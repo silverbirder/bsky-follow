@@ -74,30 +74,36 @@ function searchAndSync() {
   const config = getConfig_();
   const session = createSession_(config);
 
-  const query = config.SEARCH_QUERY;
   const limit = clampNumber_(config.SEARCH_LIMIT || 50, 1, 100);
   const maxPages = clampNumber_(config.MAX_PAGES || 1, 1, 20);
   const sort = config.SEARCH_SORT || 'latest';
   const lang = config.SEARCH_LANG || '';
 
-  let cursor = '';
-  const allPosts = [];
-  for (let i = 0; i < maxPages; i += 1) {
-    const result = searchPosts_(session, query, limit, cursor, sort, lang);
-    const posts = result && result.posts ? result.posts : [];
-    allPosts.push.apply(allPosts, posts);
-    cursor = result && result.cursor ? result.cursor : '';
-    if (!cursor) {
-      break;
-    }
-  }
-
-  if (!allPosts.length) {
+  const queries = parseKeywords_(config.SEARCH_QUERY);
+  if (!queries.length) {
     return;
   }
 
-  writePosts_(allPosts, query);
-  writeUsers_(allPosts);
+  queries.forEach((query) => {
+    let cursor = '';
+    const allPosts = [];
+    for (let i = 0; i < maxPages; i += 1) {
+      const result = searchPosts_(session, query, limit, cursor, sort, lang);
+      const posts = result && result.posts ? result.posts : [];
+      allPosts.push.apply(allPosts, posts);
+      cursor = result && result.cursor ? result.cursor : '';
+      if (!cursor) {
+        break;
+      }
+    }
+
+    if (!allPosts.length) {
+      return;
+    }
+
+    writePosts_(allPosts, query);
+    writeUsers_(allPosts);
+  });
 }
 
 function applyUserActions() {
@@ -132,11 +138,24 @@ function applyUserActions() {
 
     try {
       if (action === 'follow') {
+        if (
+          String(row[statusIndex] || '').toLowerCase() === 'followed' &&
+          row[followUriIndex]
+        ) {
+          Logger.log('Skip follow (already followed): %s', row[userUrlIndex]);
+          updatedRows.push(row);
+          continue;
+        }
         const did = toDidFromProfileUrl_(row[userUrlIndex]);
         const followUri = followActor_(session, did);
         row[followUriIndex] = followUri;
         row[statusIndex] = 'followed';
       } else if (action === 'unfollow') {
+        if (String(row[statusIndex] || '').toLowerCase() === 'unfollowed') {
+          Logger.log('Skip unfollow (already unfollowed): %s', row[userUrlIndex]);
+          updatedRows.push(row);
+          continue;
+        }
         const followUri = row[followUriIndex];
         unfollowActor_(session, followUri);
         row[statusIndex] = 'unfollowed';
@@ -421,6 +440,7 @@ function ensureHeaders_(sheet, headers) {
 }
 
 function fetchJson_(url, options) {
+  Logger.log('API request: %s %s', (options.method || 'get').toUpperCase(), url);
   const response = UrlFetchApp.fetch(url, {
     method: options.method || 'get',
     contentType: 'application/json',
@@ -430,7 +450,9 @@ function fetchJson_(url, options) {
   });
   const status = response.getResponseCode();
   const text = response.getContentText();
+  Logger.log('API response: %s %s', status, url);
   if (status >= 400) {
+    Logger.log('API error body: %s', text);
     throw new Error('HTTP ' + status + ': ' + text);
   }
   return text ? JSON.parse(text) : {};
@@ -477,6 +499,16 @@ function clampNumber_(value, min, max) {
     return min;
   }
   return Math.max(min, Math.min(max, num));
+}
+
+function parseKeywords_(value) {
+  if (!value) {
+    return [];
+  }
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item);
 }
 
 function toBskyProfileUrl_(author) {

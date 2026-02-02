@@ -2,6 +2,7 @@
 
 Bluesky API でキーワード検索し、投稿ユーザー一覧をスプレッドシートに同期、
 シート上の `action` 列からフォロー/アンフォローを自動実行する最小構成です。
+`SEARCH_QUERY` はカンマ区切りで複数キーワードを直列処理できます。
 
 ## 使い方
 
@@ -11,7 +12,7 @@ Bluesky API でキーワード検索し、投稿ユーザー一覧をスプレ�
    - `IDENTIFIER`: Bluesky のハンドル
    - `APP_PASSWORD`: アプリパスワード
    - `PDS_HOST`: 例 `https://bsky.social`（未入力なら既定で bsky.social）
-   - `SEARCH_QUERY`: 検索キーワード
+   - `SEARCH_QUERY`: 検索キーワード（カンマ区切りで複数指定可）
    - `SEARCH_LIMIT`: 1回の検索件数（1〜100）
    - `MAX_PAGES`: ページ数（1〜20）
    - `SEARCH_SORT`: `latest` or `top`（任意）
@@ -19,8 +20,8 @@ Bluesky API でキーワード検索し、投稿ユーザー一覧をスプレ�
    - `WEBHOOK_TOKEN`: Web App で呼ぶ場合のトークン（任意）
 4. メニュー `Bsky Follow → Search & sync` を実行。
    - `Posts` と `Users` シートが更新されます。
-   - `Posts.post_uri` は Bluesky の投稿URLになります。
-   - `Users.user_url` は Bluesky のユーザーページURLになります。
+   - `Posts` の列: `fetched_at`, `keyword`, `post_uri`, `post_text`, `post_created_at`, `author_display_name`
+   - `Users` の列: `user_url`, `author_display_name`, `action`, `follow_uri`, `status`
 5. `Users` シートの `action` 列に `follow` / `unfollow` を入れて
    `Bsky Follow → Apply follow/unfollow` を実行。
 
