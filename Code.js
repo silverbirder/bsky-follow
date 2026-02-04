@@ -86,9 +86,11 @@ function searchAndSync() {
       }
     }
 
-    const filteredPosts = ignoredDisplayNames.size
-      ? allPosts.filter((post) => !isIgnoredDisplayName_(post, ignoredDisplayNames))
-      : allPosts;
+    const filteredPosts = allPosts.filter((post) =>
+      ignoredDisplayNames.size
+        ? !isIgnoredDisplayName_(post, ignoredDisplayNames)
+        : true
+    );
 
     if (!filteredPosts.length) {
       return;
