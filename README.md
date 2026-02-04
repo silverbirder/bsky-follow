@@ -1,7 +1,6 @@
 # bsky-follow (GAS + Sheets)
 
-Bluesky API でキーワード検索し、投稿ユーザー一覧をスプレッドシートに同期、
-シート上の `action` 列からフォロー/アンフォローを自動実行する最小構成です。
+Bluesky API でキーワード検索し、投稿結果をスプレッドシートに同期する最小構成です。
 `SEARCH_QUERY` はカンマ区切りで複数キーワードを直列処理できます。
 
 ## 使い方
@@ -17,22 +16,19 @@ Bluesky API でキーワード検索し、投稿ユーザー一覧をスプレ�
    - `MAX_PAGES`: ページ数（1〜20）
    - `SEARCH_SORT`: `latest` or `top`（任意）
    - `SEARCH_LANG`: 言語コード（例 `ja`、任意）
+   - `IGNORE_AUTHOR_DISPLAY_NAMES`: 無視する表示名（カンマ区切りで複数指定可、任意）
    - `WEBHOOK_TOKEN`: Web App で呼ぶ場合のトークン（任意）
 4. メニュー `Bsky Follow → Search & sync` を実行。
-   - `Posts` と `Users` シートが更新されます。
    - `Posts` の列: `fetched_at`, `keyword`, `post_uri`, `post_text`, `post_created_at`, `author_display_name`
-   - `Users` の列: `user_url`, `author_display_name`, `action`, `follow_uri`, `status`
-5. `Users` シートの `action` 列に `follow` / `unfollow` を入れて
-   `Bsky Follow → Apply follow/unfollow` を実行。
+5. `Posts` を全クリアしたい場合は `Bsky Follow → Reset Posts data` を実行。
 
 ## デプロイ（Web App）
 
 1. Apps Script 画面で `デプロイ → 新しいデプロイ`。
 2. 種類は `ウェブアプリ`、`実行ユーザー: 自分`、`アクセス: 自分のみ`。
-3. 公開URLに `?action=search` もしくは `?action=apply` を付けて呼び出します。
+3. 公開URLに `?action=search` を付けて呼び出します。
    - `WEBHOOK_TOKEN` を設定した場合は `?token=...` も付与してください。
 
 ## 注意
 
-- アンフォローは `follow_uri` が入っている行のみ対応します（このツールでフォローした行）。
 - 1回の実行で大量の操作をするとレート制限の可能性があります。必要なら `MAX_PAGES` や実行間隔を調整してください。

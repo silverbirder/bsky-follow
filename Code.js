@@ -1,7 +1,6 @@
 const SHEET_NAMES = {
   CONFIG: 'Config',
   POSTS: 'Posts',
-  USERS: 'Users',
 };
 
 const CONFIG_KEYS = [
@@ -13,6 +12,7 @@ const CONFIG_KEYS = [
   'MAX_PAGES',
   'SEARCH_SORT',
   'SEARCH_LANG',
+  'IGNORE_AUTHOR_DISPLAY_NAMES',
   'WEBHOOK_TOKEN',
 ];
 
@@ -25,27 +25,18 @@ const POSTS_HEADERS = [
   'author_display_name',
 ];
 
-const USERS_HEADERS = [
-  'user_url',
-  'author_display_name',
-  'action',
-  'follow_uri',
-  'status',
-];
-
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Bsky Follow')
     .addItem('Setup sheets', 'setup')
     .addItem('Search & sync', 'searchAndSync')
-    .addItem('Apply follow/unfollow', 'applyUserActions')
+    .addItem('Reset Posts data', 'resetPosts')
     .addToUi();
 }
 
 function setup() {
   ensureSheet_(SHEET_NAMES.CONFIG, ['key', 'value']);
   ensureSheet_(SHEET_NAMES.POSTS, POSTS_HEADERS);
-  ensureSheet_(SHEET_NAMES.USERS, USERS_HEADERS);
   seedConfig_();
 }
 
@@ -60,13 +51,9 @@ function doGet(e) {
     searchAndSync();
     return ContentService.createTextOutput('search: ok');
   }
-  if (action === 'apply') {
-    applyUserActions();
-    return ContentService.createTextOutput('apply: ok');
-  }
 
   return ContentService.createTextOutput(
-    'OK. Use ?action=search or ?action=apply'
+    'OK. Use ?action=search'
   );
 }
 
@@ -84,6 +71,8 @@ function searchAndSync() {
     return;
   }
 
+  const ignoredDisplayNames = buildIgnoreSet_(config.IGNORE_AUTHOR_DISPLAY_NAMES);
+
   queries.forEach((query) => {
     let cursor = '';
     const allPosts = [];
@@ -97,82 +86,29 @@ function searchAndSync() {
       }
     }
 
-    if (!allPosts.length) {
+    const filteredPosts = ignoredDisplayNames.size
+      ? allPosts.filter((post) => !isIgnoredDisplayName_(post, ignoredDisplayNames))
+      : allPosts;
+
+    if (!filteredPosts.length) {
       return;
     }
 
-    writePosts_(allPosts, query);
-    writeUsers_(allPosts);
+    writePosts_(filteredPosts, query);
   });
 }
 
-function applyUserActions() {
-  const config = getConfig_();
-  const session = createSession_(config);
-
-  const sheet = SpreadsheetApp.getActive().getSheetByName(SHEET_NAMES.USERS);
+function resetPosts() {
+  const sheet = SpreadsheetApp.getActive().getSheetByName(SHEET_NAMES.POSTS);
   if (!sheet) {
-    throw new Error('Users sheet not found. Run setup().');
+    throw new Error('Posts sheet not found. Run setup().');
   }
-
-  const values = sheet.getDataRange().getValues();
-  if (values.length < 2) {
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow <= 1 || lastCol === 0) {
     return;
   }
-
-  const header = values[0];
-  const userUrlIndex = header.indexOf('user_url');
-  const actionIndex = header.indexOf('action');
-  const followUriIndex = header.indexOf('follow_uri');
-  const statusIndex = header.indexOf('status');
-
-  const updatedRows = [];
-
-  for (let i = 1; i < values.length; i += 1) {
-    const row = values[i];
-    const action = (row[actionIndex] || '').toString().trim().toLowerCase();
-    if (!action) {
-      updatedRows.push(row);
-      continue;
-    }
-
-    try {
-      if (action === 'follow') {
-        if (
-          String(row[statusIndex] || '').toLowerCase() === 'followed' &&
-          row[followUriIndex]
-        ) {
-          Logger.log('Skip follow (already followed): %s', row[userUrlIndex]);
-          updatedRows.push(row);
-          continue;
-        }
-        const did = toDidFromProfileUrl_(row[userUrlIndex]);
-        const followUri = followActor_(session, did);
-        row[followUriIndex] = followUri;
-        row[statusIndex] = 'followed';
-      } else if (action === 'unfollow') {
-        if (String(row[statusIndex] || '').toLowerCase() === 'unfollowed') {
-          Logger.log('Skip unfollow (already unfollowed): %s', row[userUrlIndex]);
-          updatedRows.push(row);
-          continue;
-        }
-        const followUri = row[followUriIndex];
-        unfollowActor_(session, followUri);
-        row[statusIndex] = 'unfollowed';
-        row[followUriIndex] = '';
-      } else {
-        row[statusIndex] = 'skipped';
-      }
-    } catch (err) {
-      row[statusIndex] = 'error';
-    }
-
-    updatedRows.push(row);
-  }
-
-  sheet
-    .getRange(2, 1, updatedRows.length, updatedRows[0].length)
-    .setValues(updatedRows);
+  sheet.getRange(2, 1, lastRow - 1, lastCol).clearContent();
 }
 
 function createSession_(config) {
@@ -286,45 +222,6 @@ function writePosts_(posts, keyword) {
     if (existing[postUrl]) {
       const rowIndex = existing[postUrl];
       sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
-    } else {
-      rows.push(row);
-    }
-  });
-
-  if (rows.length) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
-  }
-}
-
-function writeUsers_(posts) {
-  const sheet = SpreadsheetApp.getActive().getSheetByName(SHEET_NAMES.USERS);
-  if (!sheet) {
-    throw new Error('Users sheet not found. Run setup().');
-  }
-  ensureHeaders_(sheet, USERS_HEADERS);
-
-  const existing = getExistingIndex_(sheet, 'user_url');
-  const rows = [];
-
-  posts.forEach((post) => {
-    const userUrl = toBskyProfileUrl_(post.author);
-    if (!userUrl) {
-      return;
-    }
-
-    const row = [
-      userUrl,
-      (post.author && post.author.displayName) || '',
-      '',
-      '',
-      '',
-    ];
-
-    if (existing[userUrl]) {
-      const rowIndex = existing[userUrl];
-      const current = sheet.getRange(rowIndex, 1, 1, USERS_HEADERS.length).getValues()[0];
-      current[1] = row[1];
-      sheet.getRange(rowIndex, 1, 1, current.length).setValues([current]);
     } else {
       rows.push(row);
     }
@@ -509,6 +406,28 @@ function parseKeywords_(value) {
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item);
+}
+
+function buildIgnoreSet_(value) {
+  const items = parseKeywords_(value);
+  const set = new Set();
+  items.forEach((item) => {
+    if (item) {
+      set.add(item.toLowerCase());
+    }
+  });
+  return set;
+}
+
+function isIgnoredDisplayName_(post, ignored) {
+  if (!post || !post.author) {
+    return false;
+  }
+  const displayName = (post.author.displayName || '').toString().trim();
+  if (!displayName) {
+    return false;
+  }
+  return ignored.has(displayName.toLowerCase());
 }
 
 function toBskyProfileUrl_(author) {
