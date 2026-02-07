@@ -28,9 +28,9 @@ const POSTS_HEADERS = [
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Bsky Follow')
-    .addItem('Setup sheets', 'setup')
-    .addItem('Search & sync', 'searchAndSync')
-    .addItem('Reset Posts data', 'resetPosts')
+    .addItem('初期化', 'setup')
+    .addItem('検索', 'searchAndSync')
+    .addItem('リセット', 'resetPosts')
     .addToUi();
 }
 
