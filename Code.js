@@ -1,6 +1,7 @@
 const SHEET_NAMES = {
   CONFIG: 'Config',
   POSTS: 'Posts',
+  FOLLOWS: 'Follows',
 };
 
 const CONFIG_KEYS = [
@@ -14,15 +15,84 @@ const CONFIG_KEYS = [
   'SEARCH_LANG',
   'IGNORE_AUTHOR_DISPLAY_NAMES',
   'WEBHOOK_TOKEN',
+  'AUTO_FOLLOW_MAX_PER_RUN',
+  'AUTO_FOLLOW_MAX_PER_DAY',
+  'AUTO_FOLLOW_COOLDOWN_DAYS',
+  'AUTO_FOLLOW_MIN_DELAY_SECONDS',
+  'AUTO_FOLLOW_MAX_DELAY_SECONDS',
+  'AUTO_FOLLOW_EXCLUDE_ACTORS',
 ];
+
+const CONFIG_DEFAULTS = {
+  PDS_HOST: 'https://bsky.social',
+  SEARCH_LIMIT: '50',
+  MAX_PAGES: '1',
+  SEARCH_SORT: 'latest',
+  AUTO_FOLLOW_MAX_PER_RUN: '3',
+  AUTO_FOLLOW_MAX_PER_DAY: '20',
+  AUTO_FOLLOW_COOLDOWN_DAYS: '30',
+  AUTO_FOLLOW_MIN_DELAY_SECONDS: '15',
+  AUTO_FOLLOW_MAX_DELAY_SECONDS: '45',
+};
+
+const CONFIG_DESCRIPTIONS = {
+  IDENTIFIER: 'BlueskyのログインID。通常はhandle（例: yourname.bsky.social）を入力。',
+  APP_PASSWORD: 'BlueskyのApp Password。通常パスワードではなく、必ずApp Passwordを使用。',
+  PDS_HOST: 'BlueskyのPDSホスト。通常は https://bsky.social のままでOK。',
+  SEARCH_QUERY: '検索キーワード。複数指定する場合はカンマ区切り（例: AI,JavaScript）。',
+  SEARCH_LIMIT: '1クエリ1ページあたりの取得件数（1〜100）。大きいほど取得量が増える。',
+  MAX_PAGES: '1クエリあたりの取得ページ数（1〜20）。増やすと実行時間も増える。',
+  SEARCH_SORT: '検索並び順。latest（新着）推奨。',
+  SEARCH_LANG: '言語フィルタ。例: ja / en。空欄なら言語指定なし。',
+  IGNORE_AUTHOR_DISPLAY_NAMES: '検索結果から除外する表示名。カンマ区切りで指定。',
+  WEBHOOK_TOKEN: 'Webアプリ実行時の簡易認証トークン。設定するとURLに token=... が必須。',
+  AUTO_FOLLOW_MAX_PER_RUN: '1回の実行でフォローする最大人数。小さめ（例: 1〜5）推奨。',
+  AUTO_FOLLOW_MAX_PER_DAY: '1日あたりのフォロー上限。過剰操作回避のため低めに設定推奨。',
+  AUTO_FOLLOW_COOLDOWN_DAYS: '同一アカウントを再試行するまでの日数。重複操作の抑制用。',
+  AUTO_FOLLOW_MIN_DELAY_SECONDS: 'フォロー間の最小待機秒数。短すぎる値は避ける。',
+  AUTO_FOLLOW_MAX_DELAY_SECONDS: 'フォロー間の最大待機秒数。MIN以上の値を設定。',
+  AUTO_FOLLOW_EXCLUDE_ACTORS: '自動フォロー対象から除外するDID/handle。カンマ区切り。',
+};
+
+const CONFIG_MENU_INFO_KEYS = [
+  'MENU_RUN_SEARCH',
+  'MENU_RUN_AUTO_FOLLOW',
+  'MENU_INSTALL_SEARCH_TRIGGER',
+  'MENU_INSTALL_AUTO_FOLLOW_TRIGGER',
+];
+
+const CONFIG_MENU_INFO_DESCRIPTIONS = {
+  MENU_RUN_SEARCH:
+    'メニュー「検索」: 手動で今すぐ1回だけ searchAndSync を実行し、Postsシートを更新する。',
+  MENU_RUN_AUTO_FOLLOW:
+    'メニュー「自動フォロー」: 手動で今すぐ1回だけ autoFollow を実行する。',
+  MENU_INSTALL_SEARCH_TRIGGER:
+    'メニュー「定期検索」: searchAndSync を1時間ごとに動かすトリガーを設定。既存の searchAndSync トリガーは一度削除して作り直す。',
+  MENU_INSTALL_AUTO_FOLLOW_TRIGGER:
+    'メニュー「定期自動フォロー」: autoFollow を1時間ごとに動かすトリガーを設定。既存の autoFollow トリガーは一度削除して作り直す。',
+};
 
 const POSTS_HEADERS = [
   'fetched_at',
   'keyword',
   'post_uri',
+  'post_at_uri',
   'post_text',
   'post_created_at',
   'author_display_name',
+  'author_handle',
+  'author_did',
+];
+
+const FOLLOWS_HEADERS = [
+  'attempted_at',
+  'keyword',
+  'actor_input',
+  'actor_did',
+  'source_post_uri',
+  'status',
+  'reason',
+  'follow_uri',
 ];
 
 function onOpen() {
@@ -30,13 +100,17 @@ function onOpen() {
     .createMenu('Bsky Follow')
     .addItem('初期化', 'setup')
     .addItem('検索', 'searchAndSync')
+    .addItem('自動フォロー', 'runAutoFollowNow')
+    .addItem('定期検索', 'installSearchTrigger')
+    .addItem('定期自動フォロー', 'installAutoFollowTrigger')
     .addItem('リセット', 'resetPosts')
     .addToUi();
 }
 
 function setup() {
-  ensureSheet_(SHEET_NAMES.CONFIG, ['key', 'value']);
+  ensureSheet_(SHEET_NAMES.CONFIG, ['key', 'value', 'description']);
   ensureSheet_(SHEET_NAMES.POSTS, POSTS_HEADERS);
+  ensureSheet_(SHEET_NAMES.FOLLOWS, FOLLOWS_HEADERS);
   seedConfig_();
 }
 
@@ -51,9 +125,20 @@ function doGet(e) {
     searchAndSync();
     return ContentService.createTextOutput('search: ok');
   }
+  if (action === 'follow') {
+    const result = autoFollowFromPosts_();
+    return ContentService.createTextOutput('follow: ' + JSON.stringify(result));
+  }
+  if (action === 'search_follow') {
+    searchAndSync();
+    const result = autoFollowFromPosts_();
+    return ContentService.createTextOutput(
+      'search_follow: ' + JSON.stringify(result)
+    );
+  }
 
   return ContentService.createTextOutput(
-    'OK. Use ?action=search'
+    'OK. Use ?action=search|follow|search_follow'
   );
 }
 
@@ -98,6 +183,208 @@ function searchAndSync() {
 
     writePosts_(filteredPosts, query);
   });
+}
+
+function runAutoFollowNow() {
+  const result = autoFollowFromPosts_();
+  Logger.log('auto follow result: %s', JSON.stringify(result));
+}
+
+function autoFollow() {
+  const result = autoFollowFromPosts_();
+  Logger.log('auto follow result: %s', JSON.stringify(result));
+}
+
+function installAutoFollowTrigger() {
+  const handler = 'autoFollow';
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach((trigger) => {
+    if (trigger.getHandlerFunction() === handler) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  ScriptApp.newTrigger(handler).timeBased().everyHours(1).create();
+}
+
+function installSearchTrigger() {
+  const handler = 'searchAndSync';
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach((trigger) => {
+    if (trigger.getHandlerFunction() === handler) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  ScriptApp.newTrigger(handler).timeBased().everyHours(1).create();
+}
+
+function autoFollowFromPosts_() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const config = getConfig_();
+
+    const session = createSession_(config);
+    const postsSheet = SpreadsheetApp.getActive().getSheetByName(SHEET_NAMES.POSTS);
+    if (!postsSheet) {
+      throw new Error('Posts sheet not found. Run setup().');
+    }
+    const followsSheet = ensureSheet_(SHEET_NAMES.FOLLOWS, FOLLOWS_HEADERS);
+    ensureHeaders_(postsSheet, POSTS_HEADERS);
+
+    const maxPerRun = clampNumber_(config.AUTO_FOLLOW_MAX_PER_RUN, 1, 20);
+    const maxPerDay = clampNumber_(config.AUTO_FOLLOW_MAX_PER_DAY, 1, 200);
+    const cooldownDays = clampNumber_(config.AUTO_FOLLOW_COOLDOWN_DAYS, 1, 365);
+    const minDelaySec = clampNumber_(config.AUTO_FOLLOW_MIN_DELAY_SECONDS, 0, 300);
+    const maxDelaySec = clampNumber_(
+      config.AUTO_FOLLOW_MAX_DELAY_SECONDS,
+      minDelaySec,
+      600
+    );
+    const excludedActors = buildIgnoreSet_(config.AUTO_FOLLOW_EXCLUDE_ACTORS);
+
+    const followState = buildFollowState_(followsSheet, cooldownDays);
+    let dailyCount = countFollowedToday_(followsSheet);
+    if (dailyCount >= maxPerDay) {
+      return { status: 'daily_limit_reached', followed: 0, dailyCount: dailyCount };
+    }
+
+    const rows = postsSheet.getDataRange().getValues();
+    if (rows.length < 2) {
+      return { status: 'no_posts', followed: 0 };
+    }
+    const header = rows[0];
+    const idxKeyword = header.indexOf('keyword');
+    const idxPostUri = header.indexOf('post_uri');
+    const idxAuthorDid = header.indexOf('author_did');
+    const idxAuthorHandle = header.indexOf('author_handle');
+
+    const didCache = {};
+    const logs = [];
+    let followed = 0;
+
+    for (let i = rows.length - 1; i >= 1; i -= 1) {
+      if (followed >= maxPerRun || dailyCount >= maxPerDay) {
+        break;
+      }
+      const row = rows[i];
+      const keyword = idxKeyword >= 0 ? (row[idxKeyword] || '').toString() : '';
+      const sourcePostUri = idxPostUri >= 0 ? (row[idxPostUri] || '').toString() : '';
+      const actorInput =
+        (idxAuthorDid >= 0 ? (row[idxAuthorDid] || '').toString().trim() : '') ||
+        (idxAuthorHandle >= 0 ? (row[idxAuthorHandle] || '').toString().trim() : '') ||
+        extractActorFromPostUrl_(sourcePostUri);
+      if (!actorInput) {
+        continue;
+      }
+      if (excludedActors.has(actorInput.toLowerCase())) {
+        logs.push(
+          buildFollowLogRow_(
+            keyword,
+            actorInput,
+            '',
+            sourcePostUri,
+            'skipped',
+            'excluded_actor',
+            ''
+          )
+        );
+        continue;
+      }
+
+      let actorDid;
+      try {
+        actorDid = resolveDid_(session, actorInput, didCache);
+      } catch (err) {
+        logs.push(
+          buildFollowLogRow_(
+            keyword,
+            actorInput,
+            '',
+            sourcePostUri,
+            'error',
+            String(err),
+            ''
+          )
+        );
+        continue;
+      }
+
+      if (actorDid === session.did) {
+        logs.push(
+          buildFollowLogRow_(
+            keyword,
+            actorInput,
+            actorDid,
+            sourcePostUri,
+            'skipped',
+            'self',
+            ''
+          )
+        );
+        continue;
+      }
+      if (followState.followedDids[actorDid]) {
+        continue;
+      }
+      if (
+        followState.cooldownUntil[actorDid] &&
+        followState.cooldownUntil[actorDid] > Date.now()
+      ) {
+        continue;
+      }
+
+      try {
+        const followUri = followActor_(session, actorDid);
+        logs.push(
+          buildFollowLogRow_(
+            keyword,
+            actorInput,
+            actorDid,
+            sourcePostUri,
+            'followed',
+            '',
+            followUri
+          )
+        );
+        followState.followedDids[actorDid] = true;
+        followState.cooldownUntil[actorDid] = Date.now() + cooldownDays * 86400000;
+        followed += 1;
+        dailyCount += 1;
+      } catch (err) {
+        const message = String(err);
+        logs.push(
+          buildFollowLogRow_(
+            keyword,
+            actorInput,
+            actorDid,
+            sourcePostUri,
+            'error',
+            message,
+            ''
+          )
+        );
+        if (isStopError_(message)) {
+          break;
+        }
+      }
+
+      sleepWithJitter_(minDelaySec, maxDelaySec);
+    }
+
+    if (logs.length) {
+      followsSheet
+        .getRange(followsSheet.getLastRow() + 1, 1, logs.length, logs[0].length)
+        .setValues(logs);
+    }
+    return {
+      status: 'ok',
+      followed: followed,
+      logged: logs.length,
+      dailyCount: dailyCount,
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function resetPosts() {
@@ -152,6 +439,27 @@ function searchPosts_(session, query, limit, cursor, sort, lang) {
   });
 }
 
+function followActor_(session, did) {
+  const url = joinUrl_(session.pdsHost, '/xrpc/com.atproto.repo.createRecord');
+  const payload = {
+    repo: session.did,
+    collection: 'app.bsky.graph.follow',
+    record: {
+      $type: 'app.bsky.graph.follow',
+      subject: did,
+      createdAt: nowIso_(),
+    },
+  };
+  const response = fetchJson_(url, {
+    method: 'post',
+    headers: {
+      Authorization: 'Bearer ' + session.accessJwt,
+    },
+    payload: JSON.stringify(payload),
+  });
+  return response.uri || '';
+}
+
 function writePosts_(posts, keyword) {
   const sheet = SpreadsheetApp.getActive().getSheetByName(SHEET_NAMES.POSTS);
   if (!sheet) {
@@ -168,9 +476,12 @@ function writePosts_(posts, keyword) {
       nowIso_(),
       keyword,
       postUrl,
+      post.uri || '',
       (post.record && post.record.text) || '',
       (post.record && post.record.createdAt) || '',
       (post.author && post.author.displayName) || '',
+      (post.author && post.author.handle) || '',
+      (post.author && post.author.did) || '',
     ];
 
     if (existing[postUrl]) {
@@ -206,11 +517,59 @@ function seedConfig_() {
   if (!sheet) {
     return;
   }
-  if (sheet.getLastRow() > 1) {
-    return;
+  ensureHeaders_(sheet, ['key', 'value', 'description']);
+  const data = sheet.getDataRange().getValues();
+  const existingKeys = {};
+  const rowByKey = {};
+  for (let i = 1; i < data.length; i += 1) {
+    const key = (data[i][0] || '').toString().trim();
+    if (key) {
+      existingKeys[key] = true;
+      rowByKey[key] = i + 1;
+    }
   }
-  const values = CONFIG_KEYS.map((key) => [key, '']);
-  sheet.getRange(2, 1, values.length, 2).setValues(values);
+  const values = [];
+  CONFIG_KEYS.forEach((key) => {
+    if (!existingKeys[key]) {
+      values.push([key, CONFIG_DEFAULTS[key] || '', CONFIG_DESCRIPTIONS[key] || '']);
+    }
+  });
+  CONFIG_MENU_INFO_KEYS.forEach((key) => {
+    if (!existingKeys[key]) {
+      values.push([key, '', CONFIG_MENU_INFO_DESCRIPTIONS[key] || '']);
+    }
+  });
+  if (values.length) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, values.length, 3).setValues(values);
+  }
+
+  CONFIG_KEYS.forEach((key) => {
+    const rowIndex = rowByKey[key];
+    if (!rowIndex) {
+      return;
+    }
+    const description = CONFIG_DESCRIPTIONS[key] || '';
+    sheet.getRange(rowIndex, 3).setValue(description);
+    if (!data[rowIndex - 1] || !data[rowIndex - 1][1]) {
+      const defaultValue = CONFIG_DEFAULTS[key] || '';
+      if (defaultValue !== '') {
+        sheet.getRange(rowIndex, 2).setValue(defaultValue);
+      }
+    }
+  });
+
+  CONFIG_MENU_INFO_KEYS.forEach((key) => {
+    const rowIndex = rowByKey[key];
+    if (!rowIndex) {
+      return;
+    }
+    const description = CONFIG_MENU_INFO_DESCRIPTIONS[key] || '';
+    sheet.getRange(rowIndex, 3).setValue(description);
+  });
+
+  if (sheet.getFrozenRows() < 1) {
+    sheet.setFrozenRows(1);
+  }
 }
 
 function getConfig_() {
@@ -227,20 +586,16 @@ function getConfig_() {
     }
     config[key] = (values[i][1] || '').toString().trim();
   }
-  if (!config.PDS_HOST) {
-    config.PDS_HOST = 'https://bsky.social';
-  }
-  if (!config.SEARCH_LIMIT) {
-    config.SEARCH_LIMIT = '50';
-  }
-  if (!config.MAX_PAGES) {
-    config.MAX_PAGES = '1';
-  }
+  Object.keys(CONFIG_DEFAULTS).forEach((key) => {
+    if (!config[key]) {
+      config[key] = CONFIG_DEFAULTS[key];
+    }
+  });
   return config;
 }
 
 function validateConfig_(config) {
-  const required = ['IDENTIFIER', 'APP_PASSWORD', 'SEARCH_QUERY', 'PDS_HOST'];
+  const required = ['IDENTIFIER', 'APP_PASSWORD', 'PDS_HOST'];
   required.forEach((key) => {
     if (!config[key]) {
       throw new Error('Config missing: ' + key);
@@ -371,6 +726,127 @@ function buildIgnoreSet_(value) {
     }
   });
   return set;
+}
+
+function buildFollowState_(sheet, cooldownDays) {
+  const values = sheet.getDataRange().getValues();
+  const state = {
+    followedDids: {},
+    cooldownUntil: {},
+  };
+  if (values.length < 2) {
+    return state;
+  }
+  const header = values[0];
+  const idxAttemptedAt = header.indexOf('attempted_at');
+  const idxActorDid = header.indexOf('actor_did');
+  const idxStatus = header.indexOf('status');
+  const cooldownMs = cooldownDays * 86400000;
+  for (let i = 1; i < values.length; i += 1) {
+    const actorDid = idxActorDid >= 0 ? (values[i][idxActorDid] || '').toString().trim() : '';
+    const status = idxStatus >= 0 ? (values[i][idxStatus] || '').toString().trim() : '';
+    if (!actorDid) {
+      continue;
+    }
+    if (status === 'followed') {
+      state.followedDids[actorDid] = true;
+    }
+    const attemptedAt = idxAttemptedAt >= 0 ? new Date(values[i][idxAttemptedAt]).getTime() : NaN;
+    if (!Number.isNaN(attemptedAt)) {
+      const until = attemptedAt + cooldownMs;
+      if (!state.cooldownUntil[actorDid] || until > state.cooldownUntil[actorDid]) {
+        state.cooldownUntil[actorDid] = until;
+      }
+    }
+  }
+  return state;
+}
+
+function countFollowedToday_(sheet) {
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 2) {
+    return 0;
+  }
+  const header = values[0];
+  const idxAttemptedAt = header.indexOf('attempted_at');
+  const idxStatus = header.indexOf('status');
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  let count = 0;
+  for (let i = 1; i < values.length; i += 1) {
+    const status = idxStatus >= 0 ? (values[i][idxStatus] || '').toString().trim() : '';
+    if (status !== 'followed') {
+      continue;
+    }
+    const ts = idxAttemptedAt >= 0 ? new Date(values[i][idxAttemptedAt]).getTime() : NaN;
+    if (!Number.isNaN(ts) && ts >= start.getTime()) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function buildFollowLogRow_(keyword, actorInput, actorDid, sourcePostUri, status, reason, followUri) {
+  return [
+    nowIso_(),
+    keyword || '',
+    actorInput || '',
+    actorDid || '',
+    sourcePostUri || '',
+    status || '',
+    reason || '',
+    followUri || '',
+  ];
+}
+
+function sleepWithJitter_(minSeconds, maxSeconds) {
+  if (maxSeconds <= 0) {
+    return;
+  }
+  const minMs = Math.max(0, minSeconds) * 1000;
+  const maxMs = Math.max(minMs, maxSeconds * 1000);
+  const waitMs = minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
+  Utilities.sleep(waitMs);
+}
+
+function isStopError_(message) {
+  return /^Error: HTTP (429|5\d\d):/.test(message);
+}
+
+function resolveDid_(session, actor, cache) {
+  const normalized = String(actor || '').trim();
+  if (!normalized) {
+    throw new Error('actor is empty');
+  }
+  if (/^did:/.test(normalized)) {
+    return normalized;
+  }
+  if (cache[normalized]) {
+    return cache[normalized];
+  }
+  const did = resolveHandle_(session, normalized);
+  cache[normalized] = did;
+  return did;
+}
+
+function resolveHandle_(session, handle) {
+  const url = joinUrl_(session.pdsHost, '/xrpc/com.atproto.identity.resolveHandle');
+  const fullUrl = url + '?' + encodeQuery_({ handle: handle });
+  const data = fetchJson_(fullUrl, { method: 'get' });
+  if (!data.did) {
+    throw new Error('resolve handle failed: ' + handle);
+  }
+  return data.did;
+}
+
+function extractActorFromPostUrl_(postUrl) {
+  const match = /^https:\/\/bsky\.app\/profile\/([^/]+)\/post\/[^/]+(?:[/?#]|$)/.exec(
+    String(postUrl || '')
+  );
+  if (!match) {
+    return '';
+  }
+  return decodeURIComponent(match[1]);
 }
 
 function isIgnoredDisplayName_(post, ignored) {
