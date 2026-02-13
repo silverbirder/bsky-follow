@@ -152,54 +152,6 @@ function searchPosts_(session, query, limit, cursor, sort, lang) {
   });
 }
 
-function followActor_(session, did) {
-  const url = joinUrl_(session.pdsHost, '/xrpc/com.atproto.repo.createRecord');
-  const payload = {
-    repo: session.did,
-    collection: 'app.bsky.graph.follow',
-    record: {
-      $type: 'app.bsky.graph.follow',
-      subject: did,
-      createdAt: nowIso_(),
-    },
-  };
-  const response = fetchJson_(url, {
-    method: 'post',
-    headers: {
-      Authorization: 'Bearer ' + session.accessJwt,
-    },
-    payload: JSON.stringify(payload),
-  });
-  return response.uri;
-}
-
-function unfollowActor_(session, followUri) {
-  if (!followUri) {
-    throw new Error('follow_uri is empty');
-  }
-  const parsed = parseAtUri_(followUri);
-  if (!parsed) {
-    throw new Error('Invalid follow_uri');
-  }
-  if (parsed.collection !== 'app.bsky.graph.follow') {
-    throw new Error('follow_uri is not app.bsky.graph.follow');
-  }
-
-  const url = joinUrl_(session.pdsHost, '/xrpc/com.atproto.repo.deleteRecord');
-  const payload = {
-    repo: session.did,
-    collection: parsed.collection,
-    rkey: parsed.rkey,
-  };
-  fetchJson_(url, {
-    method: 'post',
-    headers: {
-      Authorization: 'Bearer ' + session.accessJwt,
-    },
-    payload: JSON.stringify(payload),
-  });
-}
-
 function writePosts_(posts, keyword) {
   const sheet = SpreadsheetApp.getActive().getSheetByName(SHEET_NAMES.POSTS);
   if (!sheet) {
@@ -430,42 +382,6 @@ function isIgnoredDisplayName_(post, ignored) {
     return false;
   }
   return ignored.has(displayName.toLowerCase());
-}
-
-function toBskyProfileUrl_(author) {
-  if (!author) {
-    return '';
-  }
-  const id = author.handle || author.did || '';
-  if (!id) {
-    return '';
-  }
-  return 'https://bsky.app/profile/' + encodeURIComponent(id);
-}
-
-function toDidFromProfileUrl_(userUrl) {
-  if (!userUrl) {
-    throw new Error('user_url is empty');
-  }
-  const match = /^https:\/\/bsky\.app\/profile\/([^/?#]+)(?:[/?#]|$)/.exec(
-    String(userUrl)
-  );
-  if (!match) {
-    throw new Error('user_url is invalid');
-  }
-  const id = decodeURIComponent(match[1]);
-  if (id.indexOf('did:') === 0) {
-    return id;
-  }
-  const profile = resolveProfile_(id);
-  return profile.did;
-}
-
-function resolveProfile_(actor) {
-  const config = getConfig_();
-  const url = joinUrl_(config.PDS_HOST || 'https://bsky.social', '/xrpc/com.atproto.identity.resolveHandle');
-  const fullUrl = url + '?' + encodeQuery_({ handle: actor });
-  return fetchJson_(fullUrl, { method: 'get' });
 }
 
 function toBskyPostUrl_(post) {
