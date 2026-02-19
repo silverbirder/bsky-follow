@@ -21,6 +21,10 @@ const CONFIG_KEYS = [
   'AUTO_FOLLOW_MIN_DELAY_SECONDS',
   'AUTO_FOLLOW_MAX_DELAY_SECONDS',
   'AUTO_FOLLOW_EXCLUDE_ACTORS',
+  'AUTO_UNFOLLOW_AFTER_DAYS',
+  'AUTO_UNFOLLOW_MAX_PER_RUN',
+  'AUTO_UNFOLLOW_MIN_DELAY_SECONDS',
+  'AUTO_UNFOLLOW_MAX_DELAY_SECONDS',
 ];
 
 const CONFIG_DEFAULTS = {
@@ -33,6 +37,10 @@ const CONFIG_DEFAULTS = {
   AUTO_FOLLOW_COOLDOWN_DAYS: '30',
   AUTO_FOLLOW_MIN_DELAY_SECONDS: '15',
   AUTO_FOLLOW_MAX_DELAY_SECONDS: '45',
+  AUTO_UNFOLLOW_AFTER_DAYS: '7',
+  AUTO_UNFOLLOW_MAX_PER_RUN: '10',
+  AUTO_UNFOLLOW_MIN_DELAY_SECONDS: '15',
+  AUTO_UNFOLLOW_MAX_DELAY_SECONDS: '45',
 };
 
 const CONFIG_DESCRIPTIONS = {
@@ -52,13 +60,20 @@ const CONFIG_DESCRIPTIONS = {
   AUTO_FOLLOW_MIN_DELAY_SECONDS: 'フォロー間の最小待機秒数。短すぎる値は避ける。',
   AUTO_FOLLOW_MAX_DELAY_SECONDS: 'フォロー間の最大待機秒数。MIN以上の値を設定。',
   AUTO_FOLLOW_EXCLUDE_ACTORS: '自動フォロー対象から除外するDID/handle。カンマ区切り。',
+  AUTO_UNFOLLOW_AFTER_DAYS:
+    'フォロー後に自動アンフォロー判定を始めるまでの日数。例: 7（1週間）。',
+  AUTO_UNFOLLOW_MAX_PER_RUN: '1回の実行でアンフォローする最大人数。',
+  AUTO_UNFOLLOW_MIN_DELAY_SECONDS: 'アンフォロー間の最小待機秒数。短すぎる値は避ける。',
+  AUTO_UNFOLLOW_MAX_DELAY_SECONDS: 'アンフォロー間の最大待機秒数。MIN以上の値を設定。',
 };
 
 const CONFIG_MENU_INFO_KEYS = [
   'MENU_RUN_SEARCH',
   'MENU_RUN_AUTO_FOLLOW',
+  'MENU_RUN_AUTO_UNFOLLOW',
   'MENU_INSTALL_SEARCH_TRIGGER',
   'MENU_INSTALL_AUTO_FOLLOW_TRIGGER',
+  'MENU_INSTALL_AUTO_UNFOLLOW_TRIGGER',
 ];
 
 const CONFIG_MENU_INFO_DESCRIPTIONS = {
@@ -66,10 +81,14 @@ const CONFIG_MENU_INFO_DESCRIPTIONS = {
     'メニュー「検索」: 手動で今すぐ1回だけ searchAndSync を実行し、Postsシートを更新する。',
   MENU_RUN_AUTO_FOLLOW:
     'メニュー「自動フォロー」: 手動で今すぐ1回だけ autoFollow を実行する。',
+  MENU_RUN_AUTO_UNFOLLOW:
+    'メニュー「自動アンフォロー」: 手動で今すぐ1回だけ autoUnfollow を実行する。',
   MENU_INSTALL_SEARCH_TRIGGER:
     'メニュー「定期検索」: searchAndSync を1時間ごとに動かすトリガーを設定。既存の searchAndSync トリガーは一度削除して作り直す。',
   MENU_INSTALL_AUTO_FOLLOW_TRIGGER:
     'メニュー「定期自動フォロー」: autoFollow を1時間ごとに動かすトリガーを設定。既存の autoFollow トリガーは一度削除して作り直す。',
+  MENU_INSTALL_AUTO_UNFOLLOW_TRIGGER:
+    'メニュー「定期自動アンフォロー」: autoUnfollow を1時間ごとに動かすトリガーを設定。既存の autoUnfollow トリガーは一度削除して作り直す。',
 };
 
 const POSTS_HEADERS = [
@@ -101,8 +120,10 @@ function onOpen() {
     .addItem('初期化', 'setup')
     .addItem('検索', 'searchAndSync')
     .addItem('自動フォロー', 'runAutoFollowNow')
+    .addItem('自動アンフォロー', 'runAutoUnfollowNow')
     .addItem('定期検索', 'installSearchTrigger')
     .addItem('定期自動フォロー', 'installAutoFollowTrigger')
+    .addItem('定期自動アンフォロー', 'installAutoUnfollowTrigger')
     .addItem('リセット', 'resetPosts')
     .addToUi();
 }
@@ -129,6 +150,10 @@ function doGet(e) {
     const result = autoFollowFromPosts_();
     return ContentService.createTextOutput('follow: ' + JSON.stringify(result));
   }
+  if (action === 'unfollow') {
+    const result = autoUnfollowFromFollows_();
+    return ContentService.createTextOutput('unfollow: ' + JSON.stringify(result));
+  }
   if (action === 'search_follow') {
     searchAndSync();
     const result = autoFollowFromPosts_();
@@ -138,7 +163,7 @@ function doGet(e) {
   }
 
   return ContentService.createTextOutput(
-    'OK. Use ?action=search|follow|search_follow'
+    'OK. Use ?action=search|follow|unfollow|search_follow'
   );
 }
 
@@ -195,8 +220,29 @@ function autoFollow() {
   Logger.log('auto follow result: %s', JSON.stringify(result));
 }
 
+function runAutoUnfollowNow() {
+  const result = autoUnfollowFromFollows_();
+  Logger.log('auto unfollow result: %s', JSON.stringify(result));
+}
+
+function autoUnfollow() {
+  const result = autoUnfollowFromFollows_();
+  Logger.log('auto unfollow result: %s', JSON.stringify(result));
+}
+
 function installAutoFollowTrigger() {
   const handler = 'autoFollow';
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach((trigger) => {
+    if (trigger.getHandlerFunction() === handler) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  ScriptApp.newTrigger(handler).timeBased().everyHours(1).create();
+}
+
+function installAutoUnfollowTrigger() {
+  const handler = 'autoUnfollow';
   const triggers = ScriptApp.getProjectTriggers();
   triggers.forEach((trigger) => {
     if (trigger.getHandlerFunction() === handler) {
@@ -387,6 +433,110 @@ function autoFollowFromPosts_() {
   }
 }
 
+function autoUnfollowFromFollows_() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const config = getConfig_();
+    const session = createSession_(config);
+    const followsSheet = ensureSheet_(SHEET_NAMES.FOLLOWS, FOLLOWS_HEADERS);
+    ensureHeaders_(followsSheet, FOLLOWS_HEADERS);
+
+    const unfollowAfterDays = clampNumber_(config.AUTO_UNFOLLOW_AFTER_DAYS, 1, 365);
+    const maxPerRun = clampNumber_(config.AUTO_UNFOLLOW_MAX_PER_RUN, 1, 100);
+    const minDelaySec = clampNumber_(config.AUTO_UNFOLLOW_MIN_DELAY_SECONDS, 0, 300);
+    const maxDelaySec = clampNumber_(
+      config.AUTO_UNFOLLOW_MAX_DELAY_SECONDS,
+      minDelaySec,
+      600
+    );
+    const candidates = getUnfollowCandidates_(followsSheet, unfollowAfterDays);
+    if (!candidates.length) {
+      return { status: 'no_candidates', checked: 0, unfollowed: 0, logged: 0 };
+    }
+
+    const logs = [];
+    let checked = 0;
+    let unfollowed = 0;
+
+    for (let i = 0; i < candidates.length; i += 1) {
+      if (checked >= maxPerRun) {
+        break;
+      }
+      const candidate = candidates[i];
+      checked += 1;
+
+      try {
+        const relationship = getRelationship_(session, candidate.actorDid);
+        const followingUri = relationship.following || '';
+        if (!followingUri) {
+          logs.push(
+            buildFollowLogRow_(
+              candidate.keyword,
+              candidate.actorInput,
+              candidate.actorDid,
+              candidate.sourcePostUri,
+              'unfollowed',
+              'already_unfollowed',
+              ''
+            )
+          );
+        } else if (relationship.followedBy) {
+          continue;
+        } else {
+          unfollowByUri_(session, followingUri);
+          logs.push(
+            buildFollowLogRow_(
+              candidate.keyword,
+              candidate.actorInput,
+              candidate.actorDid,
+              candidate.sourcePostUri,
+              'unfollowed',
+              'not_following_me',
+              followingUri
+            )
+          );
+          unfollowed += 1;
+        }
+      } catch (err) {
+        const message = String(err);
+        logs.push(
+          buildFollowLogRow_(
+            candidate.keyword,
+            candidate.actorInput,
+            candidate.actorDid,
+            candidate.sourcePostUri,
+            'error',
+            message,
+            ''
+          )
+        );
+        if (isStopError_(message)) {
+          break;
+        }
+      }
+
+      sleepWithJitter_(minDelaySec, maxDelaySec);
+    }
+
+    if (logs.length) {
+      followsSheet
+        .getRange(followsSheet.getLastRow() + 1, 1, logs.length, logs[0].length)
+        .setValues(logs);
+    }
+
+    return {
+      status: 'ok',
+      checked: checked,
+      unfollowed: unfollowed,
+      logged: logs.length,
+      candidates: candidates.length,
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function resetPosts() {
   const sheet = SpreadsheetApp.getActive().getSheetByName(SHEET_NAMES.POSTS);
   if (!sheet) {
@@ -458,6 +608,51 @@ function followActor_(session, did) {
     payload: JSON.stringify(payload),
   });
   return response.uri || '';
+}
+
+function getRelationship_(session, actorDid) {
+  const url = joinUrl_(session.pdsHost, '/xrpc/app.bsky.graph.getRelationships');
+  const fullUrl = url + '?' + encodeQuery_({ actor: session.did, others: actorDid });
+  const data = fetchJson_(fullUrl, {
+    method: 'get',
+    headers: {
+      Authorization: 'Bearer ' + session.accessJwt,
+    },
+  });
+  const relationships = data && data.relationships ? data.relationships : [];
+  for (let i = 0; i < relationships.length; i += 1) {
+    const relationship = relationships[i] || {};
+    if ((relationship.did || '') === actorDid) {
+      return relationship;
+    }
+  }
+  return relationships[0] || {};
+}
+
+function unfollowByUri_(session, followUri) {
+  const parsed = parseAtUri_(followUri);
+  if (!parsed) {
+    throw new Error('invalid follow uri: ' + followUri);
+  }
+  if (parsed.collection !== 'app.bsky.graph.follow') {
+    throw new Error('not follow record: ' + followUri);
+  }
+  if (parsed.repo !== session.did) {
+    throw new Error('follow uri repo mismatch: ' + followUri);
+  }
+  const url = joinUrl_(session.pdsHost, '/xrpc/com.atproto.repo.deleteRecord');
+  const payload = {
+    repo: session.did,
+    collection: parsed.collection,
+    rkey: parsed.rkey,
+  };
+  fetchJson_(url, {
+    method: 'post',
+    headers: {
+      Authorization: 'Bearer ' + session.accessJwt,
+    },
+    payload: JSON.stringify(payload),
+  });
 }
 
 function writePosts_(posts, keyword) {
@@ -748,7 +943,7 @@ function buildFollowState_(sheet, cooldownDays) {
     if (!actorDid) {
       continue;
     }
-    if (status === 'followed') {
+    if (status === 'followed' || status === 'unfollowed') {
       state.followedDids[actorDid] = true;
     }
     const attemptedAt = idxAttemptedAt >= 0 ? new Date(values[i][idxAttemptedAt]).getTime() : NaN;
@@ -760,6 +955,81 @@ function buildFollowState_(sheet, cooldownDays) {
     }
   }
   return state;
+}
+
+function getUnfollowCandidates_(sheet, unfollowAfterDays) {
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 2) {
+    return [];
+  }
+  const header = values[0];
+  const idxAttemptedAt = header.indexOf('attempted_at');
+  const idxKeyword = header.indexOf('keyword');
+  const idxActorInput = header.indexOf('actor_input');
+  const idxActorDid = header.indexOf('actor_did');
+  const idxSourcePostUri = header.indexOf('source_post_uri');
+  const idxStatus = header.indexOf('status');
+  const thresholdMs = unfollowAfterDays * 86400000;
+  const now = Date.now();
+  const byActorDid = {};
+
+  for (let i = 1; i < values.length; i += 1) {
+    const actorDid = idxActorDid >= 0 ? (values[i][idxActorDid] || '').toString().trim() : '';
+    if (!actorDid) {
+      continue;
+    }
+    const status = idxStatus >= 0 ? (values[i][idxStatus] || '').toString().trim() : '';
+    if (status !== 'followed' && status !== 'unfollowed') {
+      continue;
+    }
+    const attemptedAt = idxAttemptedAt >= 0 ? new Date(values[i][idxAttemptedAt]).getTime() : NaN;
+    if (Number.isNaN(attemptedAt)) {
+      continue;
+    }
+
+    if (!byActorDid[actorDid]) {
+      byActorDid[actorDid] = {
+        actorDid: actorDid,
+        actorInput: '',
+        keyword: '',
+        sourcePostUri: '',
+        followedAt: 0,
+        unfollowedAt: 0,
+      };
+    }
+    const entry = byActorDid[actorDid];
+    if (status === 'followed' && attemptedAt >= entry.followedAt) {
+      entry.followedAt = attemptedAt;
+      entry.actorInput =
+        idxActorInput >= 0 ? (values[i][idxActorInput] || '').toString().trim() : '';
+      entry.keyword = idxKeyword >= 0 ? (values[i][idxKeyword] || '').toString() : '';
+      entry.sourcePostUri =
+        idxSourcePostUri >= 0 ? (values[i][idxSourcePostUri] || '').toString() : '';
+    }
+    if (status === 'unfollowed' && attemptedAt >= entry.unfollowedAt) {
+      entry.unfollowedAt = attemptedAt;
+    }
+  }
+
+  const candidates = [];
+  Object.keys(byActorDid).forEach((actorDid) => {
+    const entry = byActorDid[actorDid];
+    if (!entry.followedAt) {
+      return;
+    }
+    if (entry.unfollowedAt >= entry.followedAt) {
+      return;
+    }
+    if (now - entry.followedAt < thresholdMs) {
+      return;
+    }
+    if (!entry.actorInput) {
+      entry.actorInput = actorDid;
+    }
+    candidates.push(entry);
+  });
+  candidates.sort((a, b) => a.followedAt - b.followedAt);
+  return candidates;
 }
 
 function countFollowedToday_(sheet) {
